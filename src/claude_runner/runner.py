@@ -33,23 +33,29 @@ def run_claude(
     *,
     model: str | None = None,
     timeout: int = 60,
+    add_dirs: list[str | Path] | None = None,
 ) -> str:
     """Run ``claude -p`` and return the raw text response.
 
     Handles env isolation (``CLAUDECODE`` removal), hooks bypass
     (``--setting-sources local``, nohooks cwd), and error wrapping.
 
+    Args:
+        add_dirs: Directories to grant Claude read access to (``--add-dir``).
+            Use when the prompt references files Claude needs to read.
+
     Raises:
         ClaudeTimeoutError: if the CLI does not respond within *timeout* seconds.
         ClaudeError: on non-zero exit or OS-level failure.
     """
-    cmd = _build_command(prompt, model=model)
+    cmd, stdin_input = _build_command(prompt, model=model, add_dirs=add_dirs)
     env = _clean_env()
     cwd = _ensure_nohooks_dir()
 
     try:
         result = subprocess.run(
             cmd,
+            input=stdin_input,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -76,27 +82,42 @@ def run_claude_json(
     *,
     model: str | None = None,
     timeout: int = 60,
+    add_dirs: list[str | Path] | None = None,
 ) -> dict[str, Any]:
     """Run ``claude -p`` and return the response parsed as JSON.
 
     Strips markdown fences and extracts the JSON object automatically.
     The caller receives a dict — never raw text.
 
+    Args:
+        add_dirs: Directories to grant Claude read access to (``--add-dir``).
+
     Raises:
         JsonParseError: if the response cannot be parsed as JSON.
         ClaudeTimeoutError: if the CLI does not respond within *timeout* seconds.
         ClaudeError: on non-zero exit or OS-level failure.
     """
-    raw = run_claude(prompt, model=model, timeout=timeout)
+    raw = run_claude(prompt, model=model, timeout=timeout, add_dirs=add_dirs)
     return _parse_json(raw)
 
 
-def _build_command(prompt: str, *, model: str | None) -> list[str]:
+def _build_command(
+    prompt: str, *, model: str | None, add_dirs: list[str | Path] | None = None
+) -> tuple[list[str], str | None]:
+    """Build CLI command. Returns (cmd, stdin_input).
+
+    When --add-dir is used, the prompt goes via stdin because --add-dir
+    is variadic and swallows the positional prompt argument.
+    """
     cmd = ["claude", "-p", "--setting-sources", "local"]
     if model is not None:
         cmd.extend(["--model", model])
+    if add_dirs:
+        for d in add_dirs:
+            cmd.extend(["--add-dir", str(d)])
+        return cmd, prompt
     cmd.append(prompt)
-    return cmd
+    return cmd, None
 
 
 def _clean_env() -> dict[str, str]:

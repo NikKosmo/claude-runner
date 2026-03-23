@@ -213,6 +213,34 @@ class TestRunClaude:
         with pytest.raises(ClaudeError, match="Failed to run"):
             run_claude("prompt")
 
+    @patch("claude_runner.runner._ensure_nohooks_dir")
+    @patch("claude_runner.runner.subprocess.run")
+    def test_add_dirs(self, mock_run: MagicMock, mock_ensure: MagicMock):
+        mock_ensure.return_value = "/tmp/nohooks"
+        mock_run.return_value = MagicMock(stdout="ok")
+        run_claude("analyze image", add_dirs=["/tmp/photos", "/tmp/docs"])
+
+        args = mock_run.call_args
+        cmd = args[0][0]
+        assert "--add-dir" in cmd
+        assert "/tmp/photos" in cmd
+        assert "/tmp/docs" in cmd
+        # Prompt goes via stdin when add_dirs is used
+        assert "analyze image" not in cmd
+        assert args[1]["input"] == "analyze image"
+
+    @patch("claude_runner.runner._ensure_nohooks_dir")
+    @patch("claude_runner.runner.subprocess.run")
+    def test_no_add_dirs_prompt_is_positional(self, mock_run: MagicMock, mock_ensure: MagicMock):
+        mock_ensure.return_value = "/tmp/nohooks"
+        mock_run.return_value = MagicMock(stdout="ok")
+        run_claude("test prompt")
+
+        args = mock_run.call_args
+        cmd = args[0][0]
+        assert "test prompt" in cmd
+        assert args[1]["input"] is None
+
 
 # --- run_claude_json ---
 

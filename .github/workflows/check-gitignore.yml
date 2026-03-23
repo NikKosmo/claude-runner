@@ -1,0 +1,72 @@
+name: Check for Gitignored Files
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  check-gitignored-files:
+    name: Detect Gitignored Files
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for files that should be gitignored
+        run: |
+          CHANGED_FILES=$(git diff --name-only --diff-filter=ACMRT origin/${{ github.base_ref }}...HEAD)
+
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "No files changed in this PR"
+            exit 0
+          fi
+
+          VIOLATIONS=""
+
+          while IFS= read -r file; do
+            [ -f "$file" ] || continue
+            if git check-ignore -q "$file" 2>/dev/null; then
+              VIOLATIONS="${VIOLATIONS}${file}"$'\n'
+            fi
+          done <<< "$CHANGED_FILES"
+
+          if [ -n "$VIOLATIONS" ]; then
+            echo "ERROR: The following files match .gitignore patterns and should not be committed:"
+            echo "$VIOLATIONS"
+            exit 1
+          fi
+
+          echo "No gitignored files detected in this PR"
+
+      - name: Check for common sensitive patterns
+        run: |
+          CHANGED_FILES=$(git diff --name-only --diff-filter=ACMRT origin/${{ github.base_ref }}...HEAD)
+
+          SENSITIVE_PATTERNS=(
+            "\.env$"
+            "\.pem$"
+            "\.key$"
+            "credentials\.json$"
+            "__pycache__/"
+            "\.pyc$"
+            "\.DS_Store$"
+          )
+
+          VIOLATIONS=""
+
+          for pattern in "${SENSITIVE_PATTERNS[@]}"; do
+            matches=$(echo "$CHANGED_FILES" | grep -E "$pattern" || true)
+            if [ -n "$matches" ]; then
+              VIOLATIONS="${VIOLATIONS}${matches}"$'\n'
+            fi
+          done
+
+          if [ -n "$VIOLATIONS" ]; then
+            echo "WARNING: Potentially sensitive files detected:"
+            echo "$VIOLATIONS" | sort -u
+          else
+            echo "No common sensitive file patterns detected"
+          fi

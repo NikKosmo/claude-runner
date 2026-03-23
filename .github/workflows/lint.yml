@@ -13,3 +13,4 @@ jobs:
       - run: ruff check .
       - run: ruff format --check .
       - run: pyright src/
+      - run: pytest -q --tb=short

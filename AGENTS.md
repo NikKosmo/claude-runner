@@ -47,3 +47,9 @@ Single module: `src/claude_runner/runner.py`
 - `run_claude_json()` → `run_claude()` → fence strip → `json.JSONDecoder.raw_decode` → dict
 - Env isolation: strips `CLAUDECODE`, uses `--setting-sources local`, cwd `~/.config/nohooks`
 - Zero runtime dependencies (stdlib only)
+
+## Test Commands
+
+- `.venv/bin/python -m pytest tests/ -q --tb=short`
+- `.venv/bin/python -m ruff check .`
+- `.venv/bin/python -m pyright src/claude_runner/`

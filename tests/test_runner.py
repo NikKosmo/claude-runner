@@ -14,6 +14,7 @@ from claude_runner import (
     JsonParseError,
     run_claude,
     run_claude_json,
+    runner,
 )
 from claude_runner.runner import _parse_json, _strip_fences
 
@@ -287,3 +288,64 @@ class TestRunClaudeJson:
         mock_run.side_effect = subprocess.TimeoutExpired(cmd=["claude"], timeout=60)
         with pytest.raises(ClaudeTimeoutError):
             run_claude_json("extract receipt")
+
+
+class TestGatekeeperQuarantine:
+    """The claude CLI ships as a Homebrew cask, so every upgrade re-quarantines it
+    and an unattended ``claude -p`` then waits on a dialog nobody answers."""
+
+    @pytest.fixture(autouse=True)
+    def _clean_cache(self):
+        runner._quarantine_seen.clear()
+        yield
+        runner._quarantine_seen.clear()
+
+    def _clear(self, *, stdout: str, platform: str = "darwin", env: dict | None = None):
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+
+        with (
+            patch.object(runner.sys, "platform", platform),
+            patch.object(runner.shutil, "which", return_value="/usr/local/bin/claude"),
+            patch.object(runner.os.path, "realpath", return_value="/opt/Caskroom/claude"),
+            patch.object(runner.subprocess, "run", side_effect=fake_run),
+            patch.dict(runner.os.environ, env or {}, clear=False),
+        ):
+            runner._clear_gatekeeper_quarantine()
+        return calls
+
+    def test_strips_the_attribute_when_present(self):
+        calls = self._clear(stdout="com.apple.provenance\ncom.apple.quarantine\n")
+        assert ["xattr", "-d", "com.apple.quarantine", "/opt/Caskroom/claude"] in calls
+
+    def test_no_op_when_attribute_absent(self):
+        calls = self._clear(stdout="com.apple.provenance\n")
+        assert calls == [["xattr", "/opt/Caskroom/claude"]]
+
+    def test_checked_once_per_process(self):
+        stdout = "com.apple.quarantine\n"
+        assert len(self._clear(stdout=stdout)) == 2
+        assert self._clear(stdout=stdout) == []
+
+    def test_opt_out_keeps_gatekeeper(self):
+        calls = self._clear(
+            stdout="com.apple.quarantine\n", env={"CLAUDE_RUNNER_KEEP_QUARANTINE": "1"}
+        )
+        assert calls == []
+
+    def test_no_op_off_darwin(self):
+        assert self._clear(stdout="com.apple.quarantine\n", platform="linux") == []
+
+    def test_failure_is_swallowed(self):
+        def fake_run(cmd, **kwargs):
+            raise OSError("xattr missing")
+
+        with (
+            patch.object(runner.sys, "platform", "darwin"),
+            patch.object(runner.shutil, "which", return_value="/usr/local/bin/claude"),
+            patch.object(runner.subprocess, "run", side_effect=fake_run),
+        ):
+            runner._clear_gatekeeper_quarantine()

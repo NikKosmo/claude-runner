@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
 _NOHOOKS_DIR = Path.home() / ".config" / "nohooks"
+_KEEP_QUARANTINE_ENV = "CLAUDE_RUNNER_KEEP_QUARANTINE"
+_quarantine_seen: set[str] = set()
+
+_log = logging.getLogger(__name__)
 
 
 class ClaudeError(RuntimeError):
@@ -48,6 +55,7 @@ def run_claude(
         ClaudeTimeoutError: if the CLI does not respond within *timeout* seconds.
         ClaudeError: on non-zero exit or OS-level failure.
     """
+    _clear_gatekeeper_quarantine()
     cmd, stdin_input = _build_command(prompt, model=model, add_dirs=add_dirs)
     env = _clean_env()
     cwd = _ensure_nohooks_dir()
@@ -99,6 +107,50 @@ def run_claude_json(
     """
     raw = run_claude(prompt, model=model, timeout=timeout, add_dirs=add_dirs)
     return _parse_json(raw)
+
+
+def _clear_gatekeeper_quarantine() -> None:
+    """Remove com.apple.quarantine from the claude binary when macOS re-applies it.
+
+    The CLI is distributed as a Homebrew cask, so every upgrade installs a fresh
+    binary carrying a fresh quarantine stamp. A human clicks through the resulting
+    Gatekeeper dialog once. A background job cannot: the child process waits on a
+    dialog nobody will ever answer, and the call dies at its timeout. Observed
+    2026-09-24 — four generations in a row raising
+    ``claude -p timed out after 120s`` the morning after an upgrade, with a healthy
+    binary and a valid login.
+
+    Scope is one file: the resolved claude executable, checked once per process.
+    Removing the attribute needs no privileges. Set
+    ``CLAUDE_RUNNER_KEEP_QUARANTINE=1`` to switch this off and keep Gatekeeper's
+    first-run prompt, at the cost of that hang in unattended use.
+
+    Best-effort by design: any failure is logged and ignored, because the run that
+    follows is a better error message than anything raised from here.
+    """
+    if sys.platform != "darwin" or os.environ.get(_KEEP_QUARANTINE_ENV):
+        return
+    resolved = shutil.which("claude")
+    if resolved is None:
+        return
+    real = os.path.realpath(resolved)
+    if real in _quarantine_seen:
+        return
+    _quarantine_seen.add(real)
+    try:
+        listed = subprocess.run(["xattr", real], capture_output=True, text=True, timeout=5)
+        if "com.apple.quarantine" not in listed.stdout:
+            return
+        subprocess.run(
+            ["xattr", "-d", "com.apple.quarantine", real],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        )
+        _log.info("Cleared com.apple.quarantine from %s", real)
+    except (OSError, subprocess.SubprocessError) as exc:
+        _log.warning("Could not clear com.apple.quarantine from %s: %s", real, exc)
 
 
 def _build_command(
